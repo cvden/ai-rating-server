@@ -2,6 +2,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+import { Pool } from "pg";
 
 dotenv.config();
 
@@ -9,12 +10,50 @@ const app = express();
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+async function initializeDatabase() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS catalog_items (
+      asset_id BIGINT PRIMARY KEY,
+      name TEXT NOT NULL,
+      price INTEGER,
+      item_type TEXT,
+      category TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  console.log("Catalog database table is ready.");
+}
 
 app.use(express.json({ limit: "1mb" }));
 
 // Simple per-user cooldown
 const cooldowns = new Map();
 const COOLDOWN_MS = 10000;
+
+app.get("/catalog-status", async (req, res) => {
+  try {
+    const result = await db.query(
+      "SELECT COUNT(*)::int AS item_count FROM catalog_items"
+    );
+
+    res.json({
+      connected: true,
+      itemCount: result.rows[0].item_count,
+    });
+  } catch (error) {
+    console.error("Catalog database check failed:", error.message);
+
+    res.status(500).json({
+      connected: false,
+      error: "Database check failed.",
+    });
+  }
+});
 
 app.post("/rate", async (req, res) => {
   const userId = String(req.body?.userId ?? "");
@@ -229,6 +268,13 @@ app.get("/catalog-test", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`Gemini Avatar Rater running on port ${PORT}`);
-});
+initializeDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Gemini Avatar Rater running on port ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Database initialization failed:", error.message);
+    process.exit(1);
+  });
