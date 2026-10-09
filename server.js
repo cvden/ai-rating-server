@@ -270,85 +270,117 @@ Rules:
   }
 });
 
-
-
 app.post("/catalog-collect", async (req, res) => {
-  // Protect the collector so strangers cannot trigger catalog scans.
   const adminKey = process.env.CATALOG_ADMIN_KEY;
 
   if (!adminKey || req.get("x-admin-key") !== adminKey) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const requestedPages = Number(req.body?.pages ?? 1);
-  const pages = Number.isInteger(requestedPages)
-    ? Math.max(1, Math.min(requestedPages, 5))
-    : 1;
+  // Categories: Accessories, Clothing, Body Parts, All
+  const categories = [11, 3, 4, 1];
 
-  let cursor = req.body?.cursor || null;
+  const requestedPages = Number(req.body?.pages ?? 3);
+  const pagesPerCategory = Number.isInteger(requestedPages)
+    ? Math.max(1, Math.min(requestedPages, 5))
+    : 3;
+
   let pagesFetched = 0;
-  let itemsSaved = 0;
+  let itemsProcessed = 0;
+  const categoryResults = [];
 
   try {
-    for (let page = 0; page < pages; page++) {
-      const url = new URL(
-        "https://catalog.roblox.com/v1/search/items/details"
-      );
+    for (const category of categories) {
+      let cursor = null;
+      let categoryPages = 0;
+      let categoryItems = 0;
 
-      url.searchParams.set("Category", "11");
-      url.searchParams.set("Limit", "30");
-      url.searchParams.set("SortType", "0");
-      url.searchParams.set("SortAggregation", "5");
-
-      if (cursor) {
-        url.searchParams.set("Cursor", cursor);
-      }
-
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        throw new Error(`Roblox returned HTTP ${response.status}`);
-      }
-
-      const result = await response.json();
-      const items = Array.isArray(result.data) ? result.data : [];
-
-      for (const item of items) {
-        const id = String(item.id ?? "");
-        const name = item.name;
-
-        if (!/^\d+$/.test(id) || typeof name !== "string" || !name.trim()) {
-          continue;
-        }
-
-        const rawPrice = item.price;
-        const price =
-          Number.isInteger(rawPrice) && rawPrice >= 0
-            ? rawPrice
-            : null;
-
-        await db.query(
-          `INSERT INTO catalog_items
-             (asset_id, name, price, item_type, category, updated_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())
-           ON CONFLICT (asset_id) DO UPDATE SET
-             name = EXCLUDED.name,
-             price = EXCLUDED.price,
-             item_type = EXCLUDED.item_type,
-             category = EXCLUDED.category,
-             updated_at = NOW()`,
-          [id, name.trim(), price, item.itemType ?? null, "11"]
+      for (
+        let page = 0;
+        page < pagesPerCategory;
+        page++
+      ) {
+        const url = new URL(
+          "https://catalog.roblox.com/v1/search/items/details"
         );
 
-        itemsSaved++;
+        url.searchParams.set("Category", String(category));
+        url.searchParams.set("Limit", "30");
+        url.searchParams.set("SortType", "0");
+        url.searchParams.set("SortAggregation", "5");
+
+        if (cursor) {
+          url.searchParams.set("Cursor", cursor);
+        }
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error(
+            `Roblox returned HTTP ${response.status} for category ${category}`
+          );
+        }
+
+        const result = await response.json();
+        const items = Array.isArray(result.data)
+          ? result.data
+          : [];
+
+        for (const item of items) {
+          const id = String(item.id ?? "");
+          const name = item.name;
+
+          if (
+            !/^\d+$/.test(id) ||
+            typeof name !== "string" ||
+            !name.trim()
+          ) {
+            continue;
+          }
+
+          const rawPrice = item.price;
+          const price =
+            Number.isInteger(rawPrice) && rawPrice >= 0
+              ? rawPrice
+              : null;
+
+          await db.query(
+            `INSERT INTO catalog_items
+              (asset_id, name, price, item_type, category, updated_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())
+             ON CONFLICT (asset_id) DO UPDATE SET
+               name = EXCLUDED.name,
+               price = EXCLUDED.price,
+               item_type = EXCLUDED.item_type,
+               category = EXCLUDED.category,
+               updated_at = NOW()`,
+            [
+              id,
+              name.trim(),
+              price,
+              item.itemType ?? null,
+              String(category),
+            ]
+          );
+
+          categoryItems++;
+          itemsProcessed++;
+        }
+
+        categoryPages++;
+        pagesFetched++;
+        cursor = result.nextPageCursor || null;
+
+        if (!cursor || items.length === 0) {
+          break;
+        }
       }
 
-      pagesFetched++;
-      cursor = result.nextPageCursor || null;
-
-      if (!cursor || items.length === 0) {
-        break;
-      }
+      categoryResults.push({
+        category,
+        pagesFetched: categoryPages,
+        itemsProcessed: categoryItems,
+      });
     }
 
     const countResult = await db.query(
@@ -357,11 +389,11 @@ app.post("/catalog-collect", async (req, res) => {
 
     res.json({
       success: true,
+      categoriesScanned: categories,
       pagesFetched,
-      itemsProcessed: itemsSaved,
+      itemsProcessed,
       totalItemsInDatabase: countResult.rows[0].item_count,
-      nextCursor: cursor,
-      hasMore: Boolean(cursor),
+      categoryResults,
     });
   } catch (error) {
     console.error("Catalog collection failed:", error.message);
@@ -370,7 +402,8 @@ app.post("/catalog-collect", async (req, res) => {
       success: false,
       error: "Catalog collection failed. Check the Render logs.",
       pagesFetched,
-      itemsProcessed: itemsSaved,
+      itemsProcessed,
+      categoryResults,
     });
   }
 });
