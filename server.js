@@ -108,6 +108,22 @@ app.post("/rate", async (req, res) => {
       imageRes.headers.get("content-type")?.split(";")[0] ||
       "image/png";
 
+    // Get real catalog items for Gemini to recommend.
+const catalogResult = await db.query(`
+  SELECT asset_id, name
+  FROM catalog_items
+  ORDER BY RANDOM()
+  LIMIT 40
+`);
+
+const catalogItems = catalogResult.rows.map((item) => ({
+  id: String(item.asset_id),
+  name: item.name,
+}));
+
+const catalogText = JSON.stringify(catalogItems);
+const allowedIds = new Set(catalogItems.map((item) => item.id));
+
     const result = await ai.models.generateContent({
       model: "gemini-3.5-flash-lite",
       contents: [
@@ -124,19 +140,27 @@ Consider color coordination, clothing, accessories, visual balance,
 cohesion, and originality. Be fair and specific; do not invent
 items or claim to see details that are not visible.
 
+
 Return exactly this JSON structure:
 {
   "rating": 3,
   "comment": "One concise sentence, maximum 80 characters.",
   "pros": ["Short strength", "Short strength"],
-  "cons": ["Short improvement", "Short improvement"]
+  "cons": ["Short improvement", "Short improvement"],
+  "suggestions": ["123456789", "987654321", "456789123"]
 }
+
+Available catalog items (use only these exact IDs):
+${catalogText}
 
 Rules:
 - rating must be an integer from 1 through 5.
 - comment must be one sentence.
 - Include exactly two pros and two cons.
 - Keep each pro and con under 6 words.
+- Recommend up to 3 items that fit the avatar's style.
+- Suggestions must use IDs from the available catalog items.
+- Return an empty suggestions array if no items fit.
 - No markdown or emojis.`,
             },
             {
@@ -163,13 +187,31 @@ Rules:
               type: "ARRAY",
               items: { type: "STRING" },
             },
+            suggestions: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+            },
           },
-          required: ["rating", "comment", "pros", "cons"],
+          required: [
+            "rating",
+            "comment",
+            "pros",
+            "cons",
+            "suggestions",
+          ],
         },
       },
     });
 
     const candidate = JSON.parse(result.text || "{}");
+    
+    const suggestions = Array.isArray(candidate.suggestions)
+      ? [...new Set(
+          candidate.suggestions
+            .map((id) => String(id))
+            .filter((id) => allowedIds.has(id))
+        )].slice(0, 3)
+      : [];
 
     const rating = Math.max(
       1,
@@ -201,6 +243,7 @@ Rules:
         ? candidate.comment.trim().replace(/[\r\n]+/g, " ").slice(0, 120)
         : "A promising look with room to improve.";
 
+
     res.json({
       rating,
       comment,
@@ -212,6 +255,7 @@ Rules:
         "Could use more detail",
         "Try stronger color contrast",
       ]),
+      suggestions,
     });
   } catch (err) {
     console.error("Gemini rating failed:", err.message);
