@@ -187,6 +187,46 @@ Rules:
   }
 });
 
+
+app.get("/catalog-test", async (req, res) => {
+  try {
+    const url = new URL(
+      "https://catalog.roblox.com/v1/search/items/details"
+    );
+
+    url.searchParams.set("Category", "11");
+    url.searchParams.set("Limit", "10");
+    url.searchParams.set("SortType", "0");
+    url.searchParams.set("SortAggregation", "5");
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Roblox returned HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    const items = (result.data || []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      price: item.price ?? null,
+      itemType: item.itemType ?? null,
+    }));
+
+    res.json({
+      count: items.length,
+      items,
+      hasMore: Boolean(result.nextPageCursor),
+    });
+  } catch (error) {
+    console.error("Catalog test failed:", error.message);
+    res.status(502).json({
+      error: "Could not retrieve catalog items.",
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
