@@ -278,7 +278,7 @@ app.post("/catalog-collect", async (req, res) => {
   }
 
   // Categories: Accessories, Clothing, Body Parts, All
-  const categories = [11, 3, 4, 1];
+  const categories = [11, 3, 1];
 
   const requestedPages = Number(req.body?.pages ?? 3);
   const pagesPerCategory = Number.isInteger(requestedPages)
